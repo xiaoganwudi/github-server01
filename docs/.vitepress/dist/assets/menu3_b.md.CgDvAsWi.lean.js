@@ -1,0 +1,1 @@
+import{_ as i,c as a,o as n,ae as e}from"./chunks/framework.BBzZStFQ.js";const g=JSON.parse('{"title":"配置","description":"","frontmatter":{},"headers":[],"relativePath":"menu3/b.md","filePath":"menu3/b.md"}'),p={name:"menu3/b.md"};function t(l,s,h,k,d,r){return n(),a("div",null,[...s[0]||(s[0]=[e("",17)])])}const c=i(p,[["render",t]]);export{g as __pageData,c as default};
