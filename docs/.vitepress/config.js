@@ -1,6 +1,6 @@
 const commonPath = '/menu3';
 export default {
-    base: '/server-testing/',
+    base: '/github-server01/',
     title: '小甘博客', // 所有文档的浏览器标签title
     description: '小甘博客', // 会渲染成<meta>标签，SEO用
     themeConfig: {
