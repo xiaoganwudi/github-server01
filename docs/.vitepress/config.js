@@ -1,8 +1,11 @@
 import mermaidPlugin from "./plugins/mermaidPlugin";
 
 const commonPath = "/menu3";
+// 从环境变量读取版本号
+const version = process.env.DOCS_VERSION || "latest";
+
 export default {
-  base: "/github-server01/",
+  base: `/github-server01/${version}`,
   title: "小甘博客", // 所有文档的浏览器标签title
   description: "小甘博客", // 会渲染成<meta>标签，SEO用
   markdown: {
