@@ -1,14 +1,68 @@
-name: Deploy
+# name: Deploy
+# on:
+#   workflow_dispatch: {}
+#   push:
+#     branches:
+#       - main
+#     tags:
+#       - "v*.*.*" # 匹配版本标签如 v1.0.0
+
+# # 只允许同时进行一次部署,跳过正在运行和最新队列之间的运行队列
+# # 但是,不要取消正在进行的运行,因为我们希望允许这些生产部署完成
+# concurrency:
+#   group: pages
+#   cancel-in-progress: false
+
+# jobs:
+#   deploy:
+#     runs-on: ubuntu-latest
+#     permissions:
+#       contents: read
+#       pages: write
+#       id-token: write
+#     environment:
+#       name: github-pages
+#       url: ${{ steps.deployment.outputs.page_url }}
+#     steps:
+#       - name: Checkout
+#         uses: actions/checkout@v4
+#         with:
+#           fetch-depth: 0
+
+#       - name: Setup Node
+#         uses: actions/setup-node@v4
+#         with:
+#           node-version: 20
+#           cache: npm
+
+#       - name: Install dependencies
+#         run: npm ci
+
+#       - name: Build with VitePress
+#         run: npm run docs:build
+
+#       - name: Setup Pages
+#         uses: actions/configure-pages@v4
+
+#       - name: Upload artifact
+#         uses: actions/upload-pages-artifact@v3
+#         with:
+#           path: docs/.vitepress/dist
+
+#       - name: Deploy to GitHub Pages
+#         id: deployment
+#         uses: actions/deploy-pages@v4
+
+name: Deploy Versioned Docs
+
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   push:
     branches:
       - main
     tags:
-      - "v*.*.*" # 匹配所有版本标签
+      - "v*.*.*" # 匹配版本标签如 v1.0.0
 
-# 只允许同时进行一次部署,跳过正在运行和最新队列之间的运行队列
-# 但是,不要取消正在进行的运行,因为我们希望允许这些生产部署完成
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -23,11 +77,12 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0 # 获取所有历史,包括 tags
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -38,8 +93,103 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build with VitePress
-        run: npm run docs:build
+      # 确定当前版本
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION=${GITHUB_REF_NAME}
+            echo "Building tagged version: $VERSION"
+          else
+            VERSION="latest"
+            echo "Building latest version from main branch"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # 获取所有版本标签
+      - name: Get all versions
+        id: versions
+        run: |
+          # 获取所有 v*.*.* 格式的标签并排序
+          TAGS=$(git tag -l "v*.*.*" | sort -V -r)
+          echo "All tags found:"
+          echo "$TAGS"
+
+          # 转换为 JSON 数组
+          VERSIONS_JSON=$(echo "$TAGS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "versions=$VERSIONS_JSON" >> $GITHUB_OUTPUT
+
+      # 构建当前版本的文档
+      - name: Build VitePress site
+        run: |
+          export DOCS_VERSION="${{ steps.version.outputs.version }}"
+          export ALL_VERSIONS='${{ steps.versions.outputs.versions }}'
+          echo "Building docs for version: $DOCS_VERSION"
+          npm run docs:build
+        env:
+          NODE_ENV: production
+
+      # 下载之前的部署内容(如果存在)
+      - name: Download previous deployment
+        continue-on-error: true
+        run: |
+          mkdir -p previous_deploy
+          # 尝试从 GitHub Pages 下载现有内容
+          wget -r -np -nH --cut-dirs=1 -P previous_deploy -R "index.html*" \
+            https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ || true
+
+      # 组织多版本目录结构
+      - name: Organize multi-version structure
+        run: |
+          CURRENT_VERSION="${{ steps.version.outputs.version }}"
+
+          # 创建最终部署目录
+          mkdir -p final_deploy
+
+          # 如果有之前的部署,复制过来(排除当前版本目录)
+          if [ -d "previous_deploy" ] && [ "$(ls -A previous_deploy)" ]; then
+            echo "Copying previous versions..."
+            cp -r previous_deploy/* final_deploy/ || true
+          fi
+
+          # 复制当前构建的版本
+          echo "Copying current version: $CURRENT_VERSION"
+          mkdir -p "final_deploy/$CURRENT_VERSION"
+          cp -r docs/.vitepress/dist/* "final_deploy/$CURRENT_VERSION/"
+
+          # 如果是 main 分支构建,同时更新 latest
+          if [ "$CURRENT_VERSION" == "latest" ]; then
+            echo "Updating latest version"
+          else
+            # 如果是 tag 构建,也复制到 latest(作为最新稳定版)
+            echo "Updating latest with tagged version"
+            mkdir -p final_deploy/latest
+            cp -r docs/.vitepress/dist/* final_deploy/latest/
+          fi
+
+          # 生成版本列表 JSON
+          echo '${{ steps.versions.outputs.versions }}' > final_deploy/versions.json
+
+          # 创建根目录的重定向页面
+          cat > final_deploy/index.html << 'EOF'
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Redirecting...</title>
+            <meta http-equiv="refresh" content="0; url=./latest/">
+            <script>
+              window.location.href = './latest/';
+            </script>
+          </head>
+          <body>
+            <p>Redirecting to <a href="./latest/">latest version</a>...</p>
+          </body>
+          </html>
+          EOF
+
+          echo "Final deployment structure:"
+          ls -la final_deploy/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -47,9 +197,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/.vitepress/dist
+          path: final_deploy
 
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-      

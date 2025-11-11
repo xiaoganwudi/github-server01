@@ -4,9 +4,20 @@ const commonPath = "/menu3";
 // 从环境变量读取版本号
 const version = process.env.DOCS_VERSION || "latest";
 
+// 解析所有可用版本
+let allVersions = ["latest"];
+try {
+  const versionsEnv = process.env.ALL_VERSIONS;
+  if (versionsEnv) {
+    allVersions = ["latest", ...JSON.parse(versionsEnv)];
+  }
+} catch (e) {
+  console.warn("Failed to parse ALL_VERSIONS:", e);
+}
+
 export default {
-  base: `/github-server01/`,
-  title: "小甘博客" + version, // 所有文档的浏览器标签title
+  base: `/github-server01/${version}/`,
+  title: `小甘博客 ${version === "latest" ? "" : version}`,
   description: "小甘博客", // 会渲染成<meta>标签，SEO用
   markdown: {
     config: (md) => {
