@@ -86,31 +86,33 @@ jobs:
       - name: Organize multi-version structure
         run: |
           CURRENT_VERSION="${{ steps.version.outputs.version }}"
-          
+
           mkdir -p final_deploy
-          
-          # 先复制所有之前的版本内容(保留所有历史版本)
+
+          # 先复制之前的部署内容，保留历史版本
           if [ -d "previous_deploy" ] && [ "$(ls -A previous_deploy)" ]; then
             echo "Copying all previous deployment content..."
             cp -r previous_deploy/* final_deploy/ 2>/dev/null || true
           fi
-          
-          # 覆盖/添加当前版本
+
+          # 添加/覆盖当前版本
           echo "Adding/updating version: $CURRENT_VERSION"
           mkdir -p "final_deploy/$CURRENT_VERSION"
           cp -r docs/.vitepress/dist/* "final_deploy/$CURRENT_VERSION/"
-          
-          # 如果是 tag 构建,同时也更新 latest
-          if [ "$CURRENT_VERSION" != "latest" ]; then
-            echo "Tag build detected, also updating latest symlink"
+
+          # 仅 main 分支构建更新 latest
+          if [ "$CURRENT_VERSION" == "latest" ]; then
+            echo "Main branch build detected, updating latest"
             mkdir -p final_deploy/latest
             cp -r docs/.vitepress/dist/* final_deploy/latest/
+          else
+            echo "Tag build detected, not touching latest"
           fi
-          
-          # 生成/更新版本列表
+
+          # 更新版本列表
           echo '${{ steps.versions.outputs.versions }}' > final_deploy/versions.json
-          
-          # 确保根目录有重定向页面
+
+          # 根目录重定向到 latest
           cat > final_deploy/index.html << 'EOF'
           <!DOCTYPE html>
           <html>
@@ -125,7 +127,7 @@ jobs:
           </body>
           </html>
           EOF
-          
+
           echo "==============================================="
           echo "Final deployment structure:"
           echo "==============================================="
