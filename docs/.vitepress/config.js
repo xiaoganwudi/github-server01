@@ -18,6 +18,7 @@ try {
 export default {
   base: `/github-server01/${version}/`,
   title: `小甘博客 ${version === "latest" ? "" : version}`,
+  
   description: "小甘博客", // 会渲染成<meta>标签，SEO用
   markdown: {
     config: (md) => {
