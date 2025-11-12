@@ -1,75 +1,119 @@
-name: 🚀 Deploy Versioned Docs
+name: Deploy VitePress (versioned)  # 工作流名称
 
-# 触发条件：
-# - 手动执行（workflow_dispatch）
-# - 推送到 main 分支
-# - 推送 tag（例如 v1.0.1）
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
-    tags:
-      - "v*.*.*"
+    branches: [ main ]               # main 分支推送部署到 latest
+    tags: 
+      - "v*.*.*"                     # tag 推送（vX.Y.Z）部署到对应目录
+  workflow_dispatch: {}              # 允许手动触发
 
-# 避免多个部署任务同时执行
-concurrency:
-  group: deploy-docs
-  cancel-in-progress: true
+# 必要权限：确保 GITHUB_TOKEN 有写入内容与 Pages 的权限
+permissions:
+  contents: write
+  pages: write
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ 拉取代码
-      - name: Checkout repository
+      # 1. checkout 源码（fetch-depth:0 能拿到 tags）
+      - name: Checkout repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 获取完整提交历史（读取 tag 用）
+          fetch-depth: 0
 
-      # 2️⃣ 设置 Node.js 环境
+      # 2. 设置 Node
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: '18'
 
-      # 3️⃣ 安装依赖
+      # 3. 安装依赖
       - name: Install dependencies
         run: npm ci
 
-      # 4️⃣ 判断当前部署版本
-      # 如果是 tag（如 v1.0.1），DOCS_VERSION=v1.0.1
-      # 否则（main 分支）DOCS_VERSION=latest
+      # 4. 确定要部署的版本（环境变量：DOCS_VERSION）
       - name: Determine version
         id: vars
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            echo "DOCS_VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
-          else
+          echo "GITHUB_REF=${GITHUB_REF}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG_NAME=${GITHUB_REF#refs/tags/}
+            echo "Detected tag: ${TAG_NAME}"
+            echo "DOCS_VERSION=${TAG_NAME}" >> $GITHUB_ENV
+          elif [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            echo "Detected branch: main"
             echo "DOCS_VERSION=latest" >> $GITHUB_ENV
+          else
+            echo "Not a deployable ref: ${GITHUB_REF}"
+            echo "DOCS_VERSION=skip" >> $GITHUB_ENV
           fi
 
-          # 解析所有 tag 版本列表，用于生成 version 列表
-          ALL_VERSIONS=$(git tag --list "v*" | jq -R -s -c 'split("\n")[:-1]')
-          echo "ALL_VERSIONS=$ALL_VERSIONS" >> $GITHUB_ENV
-
-      # 5️⃣ 构建 VitePress 静态文件
+      # 5. 构建 VitePress（使用你 package.json 的脚本）
       - name: Build VitePress site
+        if: env.DOCS_VERSION != 'skip'
+        env:
+          DOCS_VERSION: ${{ env.DOCS_VERSION }}
         run: |
-          echo "Building docs for version: $DOCS_VERSION"
+          echo "Building docs for $DOCS_VERSION"
+          # 把版本注入到构建环境（你的 config.js 已读取 process.env.DOCS_VERSION）
           export DOCS_VERSION=$DOCS_VERSION
-          export ALL_VERSIONS=$ALL_VERSIONS
           npm run docs:build
+          echo "Build output list:"
+          ls -la .vitepress/dist || true
 
-      # 6️⃣ 部署到 gh-pages 分支
-      # 注意：每个版本部署在不同目录中（例如 /latest/, /v1.0.1/）
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: .vitepress/dist
-          # 将构建结果放入 gh-pages 分支对应目录
-          destination_dir: ${{ env.DOCS_VERSION }}
-          keep_files: true  # 保留其他版本目录，防止覆盖
-          commit_message: "chore: deploy docs for ${{ env.DOCS_VERSION }}"
+      # 6. clone gh-pages 并把构建结果复制到对应子目录，提交并 push
+      - name: Publish to gh-pages (manual git)
+        if: env.DOCS_VERSION != 'skip'
+        env:
+          DOCS_VERSION: ${{ env.DOCS_VERSION }}
+          REPO: ${{ github.repository }}
+          # 使用内置 token 通过 HTTPS 推送
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 注意：若仓库是 GitHub Enterprise 或非 github.com，下面 clone URL 需调整
+          REPO_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+
+          # 如果 gh-pages 分支不存在，git clone 会失败 — 用 clone 后创建分支逻辑处理
+          TMP=gh-pages-tmp
+          rm -rf $TMP
+          git clone --single-branch --branch gh-pages "$REPO_URL" $TMP 2>/dev/null || (
+            echo "gh-pages branch not found — creating new gh-pages branch"
+            mkdir -p $TMP
+            cd $TMP
+            git init
+            git checkout --orphan gh-pages
+            git -c user.name="github-actions[bot]" -c user.email="github-actions[bot]@users.noreply.github.com" commit --allow-empty -m "Initialize gh-pages"
+            git push "$REPO_URL" HEAD:gh-pages
+            cd ..
+            git clone --single-branch --branch gh-pages "$REPO_URL" $TMP
+          )
+
+          # 进入 gh-pages 工作区
+          cd $TMP
+
+          # 确保 git 用户配置（用于 commit）
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 删除目标目录并复制新构建文件（保持其他版本目录不变）
+          echo "Deploying to directory: ${DOCS_VERSION}"
+          rm -rf "${DOCS_VERSION}"
+          mkdir -p "${DOCS_VERSION}"
+          # 复制构建产物（根据你的构建输出修改路径）
+          cp -r ../.vitepress/dist/* "${DOCS_VERSION}/"
+
+          # 列出变更，便于调试
+          git status --porcelain
+          git add -A
+          # 如果没有变更，git commit 会返回非零；使用 || true 来避免失败
+          if git diff --cached --quiet; then
+            echo "No changes to commit for ${DOCS_VERSION}"
+          else
+            git commit -m "chore(docs): deploy ${DOCS_VERSION} from ${GITHUB_SHA}"
+            git push origin gh-pages
+          fi
+
+          echo "Publish finished."
