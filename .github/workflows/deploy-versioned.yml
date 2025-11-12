@@ -1,5 +1,9 @@
-name: Deploy Versioned Docs
+name: 🚀 Deploy Versioned Docs
 
+# 触发条件：
+# - 手动执行（workflow_dispatch）
+# - 推送到 main 分支
+# - 推送 tag（例如 v1.0.1）
 on:
   workflow_dispatch:
   push:
@@ -8,95 +12,64 @@ on:
     tags:
       - "v*.*.*"
 
+# 避免多个部署任务同时执行
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: deploy-docs
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
 
     steps:
+      # 1️⃣ 拉取代码
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 拉取所有历史 tag
+          fetch-depth: 0  # 获取完整提交历史（读取 tag 用）
 
-      - name: Setup Node
+      # 2️⃣ 设置 Node.js 环境
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
 
+      # 3️⃣ 安装依赖
       - name: Install dependencies
         run: npm ci
 
-      # 获取所有版本标签并排序
-      - name: Get all tags
-        id: versions
+      # 4️⃣ 判断当前部署版本
+      # 如果是 tag（如 v1.0.1），DOCS_VERSION=v1.0.1
+      # 否则（main 分支）DOCS_VERSION=latest
+      - name: Determine version
+        id: vars
         run: |
-          TAGS=$(git tag -l "v*.*.*" | sort -V)
-          echo "All tags: $TAGS"
-          VERSIONS_JSON=$(echo "$TAGS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "versions=$VERSIONS_JSON" >> $GITHUB_OUTPUT
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "DOCS_VERSION=${GITHUB_REF_NAME}" >> $GITHUB_ENV
+          else
+            echo "DOCS_VERSION=latest" >> $GITHUB_ENV
+          fi
 
-      # 构建每个 tag 版本
-      - name: Build all versions
+          # 解析所有 tag 版本列表，用于生成 version 列表
+          ALL_VERSIONS=$(git tag --list "v*" | jq -R -s -c 'split("\n")[:-1]')
+          echo "ALL_VERSIONS=$ALL_VERSIONS" >> $GITHUB_ENV
+
+      # 5️⃣ 构建 VitePress 静态文件
+      - name: Build VitePress site
         run: |
-          mkdir -p final_deploy
-
-          # 构建 tag 版本
-          for TAG in ${{ steps.versions.outputs.versions }}; do
-            echo "Building docs for tag: $TAG"
-            git checkout $TAG
-            npm ci
-            npm run docs:build
-            mkdir -p final_deploy/$TAG
-            cp -r docs/.vitepress/dist/* final_deploy/$TAG/
-          done
-
-          # 构建 main 分支最新版本为 latest
-          echo "Building main branch for latest"
-          git checkout main
-          npm ci
+          echo "Building docs for version: $DOCS_VERSION"
+          export DOCS_VERSION=$DOCS_VERSION
+          export ALL_VERSIONS=$ALL_VERSIONS
           npm run docs:build
-          mkdir -p final_deploy/latest
-          cp -r docs/.vitepress/dist/* final_deploy/latest/
 
-          # 生成 versions.json，包括 latest
-          echo '${{ steps.versions.outputs.versions }}' | jq '. + ["latest"]' > final_deploy/versions.json
-
-          # 根目录重定向到 latest
-          cat > final_deploy/index.html << 'EOF'
-          <!DOCTYPE html>
-          <html>
-          <head>
-            <meta charset="utf-8">
-            <title>Redirecting...</title>
-            <meta http-equiv="refresh" content="0; url=./latest/">
-            <script>window.location.href = './latest/';</script>
-          </head>
-          <body>
-            <p>Redirecting to <a href="./latest/">latest version</a>...</p>
-          </body>
-          </html>
-          EOF
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: final_deploy
-
+      # 6️⃣ 部署到 gh-pages 分支
+      # 注意：每个版本部署在不同目录中（例如 /latest/, /v1.0.1/）
       - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: .vitepress/dist
+          # 将构建结果放入 gh-pages 分支对应目录
+          destination_dir: ${{ env.DOCS_VERSION }}
+          keep_files: true  # 保留其他版本目录，防止覆盖
+          commit_message: "chore: deploy docs for ${{ env.DOCS_VERSION }}"
