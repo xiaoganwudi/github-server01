@@ -8,7 +8,6 @@ on:
     tags:
       - "v*.*.*"
 
-# 关键:确保只有一个部署任务在运行
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -20,16 +19,15 @@ jobs:
       contents: read
       pages: write
       id-token: write
-    # 使用 environment,因为已经在 GitHub 设置中允许了 tag 部署
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-    
+
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 0  # 拉取所有历史 tag
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -40,85 +38,42 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # 确定当前版本
-      - name: Determine version
-        id: version
-        run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            VERSION=${GITHUB_REF_NAME}
-            echo "Building tagged version: $VERSION"
-          else
-            VERSION="latest"
-            echo "Building latest version from main branch"
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-
-      # 获取所有版本标签
-      - name: Get all versions
+      # 获取所有版本标签并排序
+      - name: Get all tags
         id: versions
         run: |
-          TAGS=$(git tag -l "v*.*.*" | sort -V -r)
-          echo "All tags found:"
-          echo "$TAGS"
-          
+          TAGS=$(git tag -l "v*.*.*" | sort -V)
+          echo "All tags: $TAGS"
           VERSIONS_JSON=$(echo "$TAGS" | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "versions=$VERSIONS_JSON" >> $GITHUB_OUTPUT
 
-      # 构建当前版本的文档
-      - name: Build VitePress site
+      # 构建每个 tag 版本
+      - name: Build all versions
         run: |
-          export DOCS_VERSION="${{ steps.version.outputs.version }}"
-          export ALL_VERSIONS='${{ steps.versions.outputs.versions }}'
-          echo "Building docs for version: $DOCS_VERSION"
-          npm run docs:build
-        env:
-          NODE_ENV: production
-
-      # 下载之前的部署内容
-      - name: Download previous deployment
-        continue-on-error: true
-        run: |
-          mkdir -p previous_deploy
-          wget -r -np -nH --cut-dirs=1 -P previous_deploy -R "index.html*" \
-            https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/ || true
-
-      # 组织多版本目录结构
-      - name: Organize multi-version structure
-        run: |
-          CURRENT_VERSION="${{ steps.version.outputs.version }}"
-          
           mkdir -p final_deploy
-          
-          # 复制之前的版本(排除当前版本目录)
-          if [ -d "previous_deploy" ] && [ "$(ls -A previous_deploy)" ]; then
-            echo "Copying previous versions..."
-            # 复制所有内容除了当前版本目录
-            for item in previous_deploy/*; do
-              basename=$(basename "$item")
-              if [ "$basename" != "$CURRENT_VERSION" ] && [ "$basename" != "latest" ]; then
-                cp -r "$item" final_deploy/ || true
-              fi
-            done
-          fi
-          
-          # 复制当前构建的版本
-          echo "Copying current version: $CURRENT_VERSION"
-          mkdir -p "final_deploy/$CURRENT_VERSION"
-          cp -r docs/.vitepress/dist/* "final_deploy/$CURRENT_VERSION/"
-          
-          # 处理 latest 版本
-          if [ "$CURRENT_VERSION" == "latest" ]; then
-            echo "This is a branch build, keeping as latest"
-          else
-            echo "This is a tag build, also updating latest"
-            mkdir -p final_deploy/latest
-            cp -r docs/.vitepress/dist/* final_deploy/latest/
-          fi
-          
-          # 生成版本列表
-          echo '${{ steps.versions.outputs.versions }}' > final_deploy/versions.json
-          
-          # 创建根目录重定向
+
+          # 构建 tag 版本
+          for TAG in ${{ steps.versions.outputs.versions }}; do
+            echo "Building docs for tag: $TAG"
+            git checkout $TAG
+            npm ci
+            npm run docs:build
+            mkdir -p final_deploy/$TAG
+            cp -r docs/.vitepress/dist/* final_deploy/$TAG/
+          done
+
+          # 构建 main 分支最新版本为 latest
+          echo "Building main branch for latest"
+          git checkout main
+          npm ci
+          npm run docs:build
+          mkdir -p final_deploy/latest
+          cp -r docs/.vitepress/dist/* final_deploy/latest/
+
+          # 生成 versions.json，包括 latest
+          echo '${{ steps.versions.outputs.versions }}' | jq '. + ["latest"]' > final_deploy/versions.json
+
+          # 根目录重定向到 latest
           cat > final_deploy/index.html << 'EOF'
           <!DOCTYPE html>
           <html>
@@ -133,9 +88,6 @@ jobs:
           </body>
           </html>
           EOF
-          
-          echo "Final deployment structure:"
-          ls -la final_deploy/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
